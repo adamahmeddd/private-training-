@@ -111,6 +111,7 @@ input[type=text]:focus,input[type=search]:focus{border-color:var(--red);box-shad
 .pill.ok{background:rgba(46,204,113,.12);color:var(--green)}
 .pill.soon{background:rgba(224,161,0,.14);color:var(--amber)}
 .pill.overdue{background:rgba(204,0,0,.2);color:#ff4d4d}
+.pill.left{background:rgba(138,138,143,.16);color:var(--muted)}
 .meta{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;margin-top:12px}
 .meta div{font-size:12px;color:var(--muted)}
 .meta div b{display:block;font-size:14px;color:var(--silver);font-weight:600;margin-top:2px}
@@ -118,10 +119,14 @@ input[type=text]:focus,input[type=search]:focus{border-color:var(--red);box-shad
 .bar i{display:block;height:100%;background:var(--silver);border-radius:4px}
 .card.soon .bar i{background:var(--amber)}
 .card.overdue .bar i{background:var(--red)}
+.card.left::before{background:var(--muted)}
+.card.left{opacity:.72}
+.card.left .bar i{background:var(--muted)}
 .actions{display:flex;gap:8px;margin-top:14px}
 .act{flex:1;padding:12px;border-radius:10px;font-weight:700;font-size:14px;border:1px solid var(--border);background:var(--surface-2);color:var(--silver);cursor:pointer}
 .act:active{transform:scale(.98)}
 .act.pay{flex:2;background:linear-gradient(135deg,var(--red),var(--red-dark));border-color:var(--red);color:#fff}
+.actions.even .act{flex:1}
 
 /* Session history */
 .history{display:none;margin-top:14px;border-top:1px solid var(--border);padding-top:6px}
@@ -257,7 +262,7 @@ nav button.active{color:var(--red)}
     <h2>Roster</h2>
     <p class="sub">Fewest sessions left first. Tap Sign Session after each session.</p>
     <div class="stats">
-      <div class="stat"><b id="stat-total">0</b><span>Fighters</span></div>
+      <div class="stat"><b id="stat-total">0</b><span>Active</span></div>
       <div class="stat warn"><b id="stat-low">0</b><span>Running low</span></div>
       <div class="stat bad"><b id="stat-done">0</b><span>Finished</span></div>
     </div>
@@ -268,7 +273,7 @@ nav button.active{color:var(--red)}
   <!-- ALERTS -->
   <section id="notifications" class="tab">
     <h2>Renewals Due</h2>
-    <p class="sub">Fighters with 2 or fewer sessions left.</p>
+    <p class="sub">2 or fewer sessions left. Mark as Paid to renew, or Not Renewing if he quits.</p>
     <div id="notifications-container"></div>
   </section>
 </main>
@@ -365,10 +370,12 @@ const openHistory = new Set();
 
 // ---------- Helpers ----------
 const find = id => clients.find(c => c.id === id);
+const isActive = c => c.status !== 'left';   // old saved fighters have no status, so they count as active
 const usedOf = c => c.packTotal - c.remaining;
 const lastSession = c => c.sessions.length ? c.sessions[c.sessions.length - 1].date : null;
 
 function status(c) {
+  if (c.status === 'left') return { cls: 'left', text: 'Left' };
   if (c.remaining <= 0)  return { cls: 'overdue', text: 'Finished' };
   if (c.remaining <= LOW) return { cls: 'soon', text: `${c.remaining} left` };
   return { cls: 'ok', text: `${c.remaining} left` };
@@ -414,6 +421,17 @@ function refreshAll() {
   if (a === 'notifications') renderNotifications();
 }
 
+// After a change made from a card: slide the card out of Alerts, then refresh
+function afterChange(id) {
+  const card = document.querySelector(`.tab.active #card-${id}`);
+  if (card && activeTab() === 'notifications') {
+    card.classList.add('removing');
+    setTimeout(refreshAll, 300);
+  } else {
+    refreshAll();
+  }
+}
+
 // ---------- Add fighter ----------
 document.getElementById('add-form').addEventListener('submit', function (e) {
   e.preventDefault();
@@ -452,6 +470,7 @@ function historyHTML(c) {
       ${items ? `<ul>${items}</ul>` : '<p class="none">No sessions signed yet.</p>'}
       <div class="hist-actions">
         ${usedOf(c) > 0 ? `<button class="link-btn muted" onclick="askUndo(${c.id})">Undo last session</button>` : '<span></span>'}
+        ${isActive(c) ? `<button class="link-btn muted" onclick="askLeave(${c.id})">Mark as left</button>` : ''}
         <button class="link-btn" onclick="askDelete(${c.id})">Remove fighter</button>
       </div>
     </div>`;
@@ -464,11 +483,14 @@ function cardHTML(c, mode) {
 
   let actions;
   if (mode === 'alert') {
-    actions = `<button class="act pay" onclick="openPay(${c.id})">Mark as Paid</button>`;
+    actions = `<button class="act pay" onclick="openPay(${c.id})">Mark as Paid</button>
+      <button class="act" onclick="askLeave(${c.id})">Not Renewing</button>`;
   } else {
-    const main = c.remaining > 0
-      ? `<button class="act pay" onclick="openSign(${c.id})">Sign Session</button>`
-      : `<button class="act pay" onclick="openPay(${c.id})">Renew Package</button>`;
+    const main = !isActive(c)
+      ? `<button class="act pay" onclick="openPay(${c.id})">Reactivate</button>`
+      : c.remaining > 0
+        ? `<button class="act pay" onclick="openSign(${c.id})">Sign Session</button>`
+        : `<button class="act pay" onclick="openPay(${c.id})">Renew Package</button>`;
     actions = `${main}<button class="act" id="hbtn-${c.id}" onclick="toggleHistory(${c.id})">${openHistory.has(c.id) ? 'Hide' : 'History'}</button>`;
   }
 
@@ -482,10 +504,10 @@ function cardHTML(c, mode) {
         <div>Package<b>${PACKS[c.packSize].label}</b></div>
         <div>Attended<b>${usedOf(c)} / ${c.packTotal}</b></div>
         <div>Last session<b>${last ? fmt(last) : '—'}</b></div>
-        <div>Joined<b>${fmt(c.joinDate)}</b></div>
+        ${c.status === 'left' ? `<div>Left on<b>${fmt(c.leftDate)}</b></div>` : `<div>Joined<b>${fmt(c.joinDate)}</b></div>`}
       </div>
       <div class="bar"><i style="width:${pct}%"></i></div>
-      <div class="actions">${actions}</div>
+      <div class="actions ${mode === 'alert' ? 'even' : ''}">${actions}</div>
       ${mode === 'alert' ? '' : historyHTML(c)}
     </div>`;
 }
@@ -502,13 +524,13 @@ const emptyIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 // ---------- Roster ----------
 function renderClients() {
   const q = document.getElementById('search').value.trim().toLowerCase();
-  document.getElementById('stat-total').textContent = clients.length;
-  document.getElementById('stat-low').textContent = clients.filter(c => c.remaining > 0 && c.remaining <= LOW).length;
-  document.getElementById('stat-done').textContent = clients.filter(c => c.remaining <= 0).length;
+  document.getElementById('stat-total').textContent = clients.filter(isActive).length;
+  document.getElementById('stat-low').textContent = clients.filter(c => isActive(c) && c.remaining > 0 && c.remaining <= LOW).length;
+  document.getElementById('stat-done').textContent = clients.filter(c => isActive(c) && c.remaining <= 0).length;
 
   const list = clients
     .filter(c => c.name.toLowerCase().includes(q))
-    .sort((a, b) => a.remaining - b.remaining || a.name.localeCompare(b.name));
+    .sort((a, b) => (!isActive(a) - !isActive(b)) || a.remaining - b.remaining || a.name.localeCompare(b.name));
 
   const container = document.getElementById('client-list-container');
   if (!list.length) {
@@ -520,7 +542,7 @@ function renderClients() {
 
 // ---------- Alerts ----------
 function renderNotifications() {
-  const due = clients.filter(c => c.remaining <= LOW).sort((a, b) => a.remaining - b.remaining);
+  const due = clients.filter(c => isActive(c) && c.remaining <= LOW).sort((a, b) => a.remaining - b.remaining);
   const container = document.getElementById('notifications-container');
   if (!due.length) {
     container.innerHTML = `<div class="empty">${emptyIcon}<p>Every fighter has sessions left!</p></div>`;
@@ -530,7 +552,7 @@ function renderNotifications() {
 }
 
 function updateBadge() {
-  const n = clients.filter(c => c.remaining <= LOW).length;
+  const n = clients.filter(c => isActive(c) && c.remaining <= LOW).length;
   const badge = document.getElementById('alert-badge');
   badge.textContent = n;
   badge.classList.toggle('hide', n === 0);
@@ -627,6 +649,8 @@ function confirmPay() {
   if (!c) return;
   const n = +document.querySelector('input[name="renew"]:checked').value;
 
+  c.status = 'active';       // also reactivates a fighter who had left
+  delete c.leftDate;
   c.remaining += n;          // leftover sessions carry over
   c.packTotal = c.remaining;
   c.packSize = n;
@@ -634,13 +658,7 @@ function confirmPay() {
   saveData();
   closeSheet('pay-overlay');
 
-  const card = document.querySelector(`.tab.active #card-${c.id}`);
-  if (card && activeTab() === 'notifications') {
-    card.classList.add('removing');
-    setTimeout(refreshAll, 300);
-  } else {
-    refreshAll();
-  }
+  afterChange(c.id);
   toast(`${c.name} renewed · ${c.remaining} sessions`);
   payId = null;
 }
@@ -669,6 +687,23 @@ function askUndo(id) {
     `Session #${c.sessions.length} (${fmtTime(lastSession(c))}) will be removed and returned to ${c.name}'s package.`,
     'Undo',
     () => { c.sessions.pop(); c.remaining++; saveData(); refreshAll(); toast('Session undone'); }
+  );
+}
+
+function askLeave(id) {
+  const c = find(id);
+  if (!c) return;
+  askConfirm(
+    'Not Renewing?',
+    `${c.name} will be marked as left and removed from Alerts. His session history is kept, and you can reactivate him later.`,
+    'Mark as Left',
+    () => {
+      c.status = 'left';
+      c.leftDate = new Date().toISOString();
+      saveData();
+      afterChange(c.id);
+      toast(`${c.name} marked as left`);
+    }
   );
 }
 
